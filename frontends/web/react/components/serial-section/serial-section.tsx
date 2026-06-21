@@ -11,6 +11,20 @@ const DEVICE_ICON: { [key: string]: string } = {
     printer: "🖨️"
 };
 
+const sendAskToBridge = async (message: string, prompt: string) => {
+    try {
+        const response = await fetch("http://localhost:3000/api/gb-message", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ message, prompt }),
+        });
+        const data = (await response.json()) as { reply?: string };
+        console.log("[Boytacean bridge] server reply:", data.reply);
+    } catch (error) {
+        console.error("[Boytacean bridge] server request failed:", error);
+    }
+};
+
 type SerialSectionProps = {
     emulator: GameboyEmulator;
     style?: string[];
@@ -50,8 +64,7 @@ export const SerialSection: FC<SerialSectionProps> = ({
                         if (message.startsWith("ASK:")) {
                             const prompt = message.slice(4);
                             console.log("[Boytacean bridge] prompt:", prompt);
-                            const reply = `LOCAL_REPLY:${prompt}`;
-                            console.log("[Boytacean bridge] reply:", reply);
+                            void sendAskToBridge(message, prompt);
                         }
                     }
                 } else {
