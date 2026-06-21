@@ -62,8 +62,11 @@ const server = http.createServer(async (req, res) => {
 
     console.log("[GB bridge server] received:", body);
 
+    const reply = "OK!";
+    console.log("[GB bridge server] replying:", JSON.stringify(reply));
+
     sendJson(res, 200, {
-      reply: "Hello from local bridge server",
+      reply,
       receivedPrompt: body.prompt ?? "",
     });
     return;

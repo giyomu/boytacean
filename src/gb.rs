@@ -1647,6 +1647,10 @@ impl GameBoy {
         self.attach_serial(printer);
     }
 
+    pub fn queue_serial_byte_wa(&mut self, byte: u8) {
+        self.serial().queue_byte(byte);
+    }
+
     pub fn add_cheat_code_wa(&mut self, code: &str) -> Result<bool, String> {
         Ok(self.add_cheat_code(code)?)
     }
@@ -1708,6 +1712,12 @@ extern "C" {
 
     #[wasm_bindgen(js_namespace = window, js_name = loggerCallback)]
     fn logger_callback(data: Vec<u8>);
+
+    #[wasm_bindgen(js_namespace = window, js_name = serialQueueDebugCallback)]
+    fn serial_queue_debug_callback(stage: &str, byte: u8, queue_len: usize);
+
+    #[wasm_bindgen(js_namespace = window, js_name = serialInputDebugCallback)]
+    fn serial_input_debug_callback(byte_receive: u8, data: u8, byte_send: u8);
 
     #[wasm_bindgen(js_namespace = window, js_name = printerCallback)]
     fn printer_callback(image_buffer: Vec<u8>);

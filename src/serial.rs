@@ -1,5 +1,10 @@
 //! Serial transfer (Link Cable) functions and structures.
 
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
+
+use std::collections::VecDeque;
+
 use crate::{
     consts::{SB_ADDR, SC_ADDR},
     mmu::BusComponent,
@@ -39,6 +44,8 @@ pub struct Serial {
     byte_send: u8,
     byte_receive: u8,
     int_serial: bool,
+    incoming: VecDeque<u8>,
+    receive_from_queue: bool,
     device: Box<dyn SerialDevice>,
 }
 
@@ -56,8 +63,16 @@ impl Serial {
             byte_send: 0x0,
             byte_receive: 0x0,
             int_serial: false,
+            incoming: VecDeque::new(),
+            receive_from_queue: false,
             device: Box::<NullDevice>::default(),
         }
+    }
+
+    pub fn queue_byte(&mut self, byte: u8) {
+        self.incoming.push_back(byte);
+        #[cfg(feature = "wasm")]
+        serial_queue_debug_callback("push", byte, self.incoming.len());
     }
 
     pub fn reset(&mut self) {
@@ -72,6 +87,7 @@ impl Serial {
         self.byte_send = 0x0;
         self.byte_receive = 0x0;
         self.int_serial = false;
+        self.receive_from_queue = false;
     }
 
     pub fn clock(&mut self, cycles: u16) {
@@ -93,7 +109,11 @@ impl Serial {
     pub fn read(&self, addr: u16) -> u8 {
         match addr {
             // 0xFF01 — SB: Serial transfer data
-            SB_ADDR => self.data,
+            SB_ADDR => {
+                #[cfg(feature = "wasm")]
+                serial_sb_read_debug_callback(self.data);
+                self.data
+            }
             // 0xFF02 — SC: Serial transfer control
             SC_ADDR =>
             {
@@ -144,7 +164,23 @@ impl Serial {
                     // no real effect on the emulation (ex: no timing issues)
                     // then stores the byte to be sent to the device so that
                     // it's sent by the end of the send cycle
-                    self.byte_receive = self.device.send();
+                    #[cfg(feature = "wasm")]
+                    serial_queue_debug_callback("transfer_start", self.data, self.incoming.len());
+                    if let Some(byte) = self.incoming.pop_front() {
+                        self.byte_receive = byte;
+                        self.receive_from_queue = true;
+                        #[cfg(feature = "wasm")]
+                        serial_queue_debug_callback("pop_queue", byte, self.incoming.len());
+                    } else {
+                        self.byte_receive = self.device.send();
+                        self.receive_from_queue = false;
+                        #[cfg(feature = "wasm")]
+                        serial_queue_debug_callback(
+                            "fallback_device",
+                            self.byte_receive,
+                            self.incoming.len(),
+                        );
+                    }
                     self.byte_send = self.data;
                 }
             }
@@ -204,6 +240,13 @@ impl Serial {
             self.transferring = false;
             self.length = 0;
             self.bit_count = 0;
+
+            if self.receive_from_queue {
+                self.data = self.byte_receive;
+                #[cfg(feature = "wasm")]
+                serial_input_debug_callback(self.byte_receive, self.data, self.byte_send);
+                self.receive_from_queue = false;
+            }
 
             // received the byte on the device as the
             // complete send operation has been performed
@@ -267,4 +310,17 @@ impl Default for NullDevice {
     fn default() -> Self {
         Self::new()
     }
+}
+
+#[cfg(feature = "wasm")]
+#[wasm_bindgen]
+extern "C" {
+    #[wasm_bindgen(js_namespace = window, js_name = serialQueueDebugCallback)]
+    fn serial_queue_debug_callback(stage: &str, byte: u8, queue_len: usize);
+
+    #[wasm_bindgen(js_namespace = window, js_name = serialInputDebugCallback)]
+    fn serial_input_debug_callback(byte_receive: u8, data: u8, byte_send: u8);
+
+    #[wasm_bindgen(js_namespace = window, js_name = serialSbReadDebugCallback)]
+    fn serial_sb_read_debug_callback(value: u8);
 }

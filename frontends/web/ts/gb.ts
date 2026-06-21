@@ -945,6 +945,10 @@ export class GameboyEmulator extends EmulatorLogic implements Emulator {
         this.trigger("printer", { imageBuffer: imageBuffer });
     }
 
+    queueSerialByte(byte: number) {
+        this.gameBoy?.queue_serial_byte_wa(byte & 0xff);
+    }
+
     /**
      * Tries for save/flush the current machine RAM into the
      * `localStorage`, so that it can be latter restored.
@@ -1050,6 +1054,9 @@ declare global {
         panic: (message: string) => void;
         speedCallback: (speed: GameBoySpeed) => void;
         loggerCallback: (data: Uint8Array) => void;
+        serialQueueDebugCallback: (stage: string, byte: number, queueLen: number) => void;
+        serialInputDebugCallback: (byteReceive: number, data: number, byteSend: number) => void;
+        serialSbReadDebugCallback: (value: number) => void;
         printerCallback: (imageBuffer: Uint8Array) => void;
         rumbleCallback: (active: boolean) => void;
     }
@@ -1069,6 +1076,35 @@ window.speedCallback = (speed: GameBoySpeed) => {
 
 window.loggerCallback = (data: Uint8Array) => {
     window.emulator.onLoggerDevice(data);
+};
+
+window.serialQueueDebugCallback = (stage, byte, queueLen) => {
+    console.log("[Boytacean serial queue debug]", {
+        stage,
+        byte,
+        hex: `0x${byte.toString(16).padStart(2, "0")}`,
+        char: String.fromCharCode(byte),
+        queueLen,
+    });
+};
+
+window.serialInputDebugCallback = (byteReceive, data, byteSend) => {
+    console.log("[Boytacean serial input debug]", {
+        byteReceive,
+        data,
+        byteSend,
+        byteReceiveHex: `0x${byteReceive.toString(16).padStart(2, "0")}`,
+        dataHex: `0x${data.toString(16).padStart(2, "0")}`,
+        byteSendHex: `0x${byteSend.toString(16).padStart(2, "0")}`,
+    });
+};
+
+window.serialSbReadDebugCallback = (value) => {
+    console.log("[Boytacean SB read debug]", {
+        value,
+        hex: `0x${value.toString(16).padStart(2, "0")}`,
+        char: String.fromCharCode(value),
+    });
 };
 
 window.printerCallback = (imageBuffer: Uint8Array) => {
