@@ -47,6 +47,12 @@ export const SerialSection: FC<SerialSectionProps> = ({
                     messageBufferRef.current = "";
                     if (message !== "") {
                         console.log("[Boytacean serial message]", message);
+                        if (message.startsWith("ASK:")) {
+                            const prompt = message.slice(4);
+                            console.log("[Boytacean bridge] prompt:", prompt);
+                            const reply = `LOCAL_REPLY:${prompt}`;
+                            console.log("[Boytacean bridge] reply:", reply);
+                        }
                     }
                 } else {
                     messageBufferRef.current += charByte;

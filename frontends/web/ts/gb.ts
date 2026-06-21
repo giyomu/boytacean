@@ -22,6 +22,7 @@ import {
     Validation
 } from "emukit";
 import { loadAsync } from "jszip";
+import React from "react";
 
 import {
     default as _wasm,
@@ -527,7 +528,7 @@ export class GameboyEmulator extends EmulatorLogic implements Emulator {
             {
                 name: "Serial",
                 icon: require("../res/serial.svg"),
-                node: SerialSection({ emulator: this })
+                node: React.createElement(SerialSection, { emulator: this })
             }
         ];
         if (this._playlistUrl) {
