@@ -27,6 +27,7 @@ export const SerialSection: FC<SerialSectionProps> = ({
     const [loggerData, setLoggerData] = useState<string>();
     const [printerImageUrls, setPrinterImageUrls] = useState<string[]>();
     const loggerDataRef = useRef<string[]>([]);
+    const messageBufferRef = useRef("");
     const printerDataRef = useRef<string[]>([]);
     const loggerRef = useRef<HTMLDivElement>(null);
     const imagesRef = useRef<HTMLDivElement>(null);
@@ -35,6 +36,22 @@ export const SerialSection: FC<SerialSectionProps> = ({
         const onLoggerData = (data: Uint8Array) => {
             const byte = data[0];
             const charByte = String.fromCharCode(byte);
+            console.log("[Boytacean serial]", {
+                byte,
+                hex: `0x${byte.toString(16).padStart(2, "0")}`,
+                char: charByte,
+            });
+            if (byte !== 0x0d) {
+                if (byte === 0x0a) {
+                    const message = messageBufferRef.current;
+                    messageBufferRef.current = "";
+                    if (message !== "") {
+                        console.log("[Boytacean serial message]", message);
+                    }
+                } else {
+                    messageBufferRef.current += charByte;
+                }
+            }
             loggerDataRef.current.push(charByte);
             setLoggerData(loggerDataRef.current.join(""));
         };
