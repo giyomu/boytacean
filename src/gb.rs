@@ -1651,6 +1651,18 @@ impl GameBoy {
         self.serial().queue_byte(byte);
     }
 
+    pub fn clear_serial_queue_wa(&mut self) {
+        self.serial().clear_incoming_queue();
+    }
+
+    pub fn read_memory_wa(&self, addr: u16) -> u8 {
+        self.mmu_i().read(addr)
+    }
+
+    pub fn write_memory_wa(&mut self, addr: u16, value: u8) {
+        self.mmu().write(addr, value);
+    }
+
     pub fn add_cheat_code_wa(&mut self, code: &str) -> Result<bool, String> {
         Ok(self.add_cheat_code(code)?)
     }

@@ -2,14 +2,152 @@ const http = require("http");
 
 const PORT = 3000;
 const HOST = "localhost";
-const ALLOWED_ORIGIN = "http://localhost:8000";
 const GB_MESSAGE_PATH = "/api/gb-message";
 
-function sendJson(res, statusCode, data) {
+function getAllowedOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) {
+    return "*";
+  }
+  if (
+    origin.startsWith("http://localhost:") ||
+    origin.startsWith("http://127.0.0.1:") ||
+    origin.startsWith("http://[::1]:")
+  ) {
+    return origin;
+  }
+  return "null";
+}
+
+function cleanAiReply(text) {
+  let cleaned = String(text || "")
+    .replace(/[._]+/g, " ")
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  const banned = [
+    "GET KEY",
+    "GIVE KEY",
+    "SECRET PASSAGE EXISTS HERE",
+    "FIND KEY",
+  ];
+
+  if (
+    cleaned.length < 12 ||
+    banned.includes(cleaned) ||
+    cleaned.split(" ").length < 4
+  ) {
+    cleaned = "SEARCH NEAR THE STATUE";
+  }
+
+  const forbiddenWords = [
+    "WAREHOUSE",
+    "ZORA",
+    "HYRULE",
+    "LINK",
+    "GANON",
+    "PRINCESS",
+    "CASTLE",
+    "MASTER SWORD",
+  ];
+
+  if (forbiddenWords.some((word) => cleaned.includes(word))) {
+    cleaned = "CHECK THE TORCH BESIDE THE DOOR";
+  }
+
+  return cleaned.slice(0, 48);
+}
+
+let aiJobRunning = false;
+let latestAiReply = "";
+let latestAiReady = false;
+
+function startAiJob(command) {
+  if (aiJobRunning) {
+    console.log("[GB bridge server] AI job already running");
+    return;
+  }
+
+  console.log("[GB bridge server] starting AI job for:", command);
+
+  aiJobRunning = true;
+  latestAiReady = false;
+  latestAiReply = "";
+
+  askOllama(command)
+    .then((aiReply) => {
+      latestAiReply = aiReply;
+      latestAiReady = true;
+      console.log("[Ollama reply ready]", latestAiReply);
+    })
+    .catch((err) => {
+      latestAiReply = "NO AI REPLY";
+      latestAiReady = true;
+      console.error("[Ollama error]", err);
+    })
+    .finally(() => {
+      aiJobRunning = false;
+    });
+}
+
+async function askOllama(command) {
+  const prompt = `You are an NPC in a small Game Boy dungeon crawler.
+The player is in the first dungeon entrance.
+There is a locked door.
+A hidden switch can reveal stairs.
+The NPC gives cryptic but useful hints.
+Reply in one short sentence, max 48 characters.
+Use spaces between words.
+Do not use dots or underscores.
+Uppercase ASCII only.
+No markdown.
+No explanation.
+No Zelda names.
+
+Use only this dungeon vocabulary when possible:
+KEY, DOOR, TORCH, WALL, STATUE, SWITCH, STAIRS, ROOM, STONE
+
+Avoid names or places from existing games.
+Do not invent locations outside this dungeon.
+
+Bad reply examples:
+GIVE.KEY.HERE
+SECRET_PASSAGE_EXISTS_HERE
+GET_KEY
+
+Good reply examples:
+FIND THE KEY NEAR THE STATUE
+TRY THE WALL BESIDE THE TORCH
+A SWITCH HIDES UNDER STONE
+
+Player command:
+${command}`;
+
+  const r = await fetch("http://localhost:11434/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "qwen2.5:3b",
+      prompt,
+      stream: false,
+    }),
+  });
+
+  if (!r.ok) {
+    throw new Error(`Ollama HTTP ${r.status}`);
+  }
+
+  const data = await r.json();
+  return cleanAiReply(data.response || "");
+}
+
+function sendJson(res, statusCode, data, req) {
   const body = JSON.stringify(data);
   res.writeHead(statusCode, {
     "Content-Type": "application/json",
-    "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+    "Access-Control-Allow-Origin": getAllowedOrigin(req),
     "Access-Control-Allow-Methods": "POST, OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type",
   });
@@ -30,7 +168,7 @@ const server = http.createServer(async (req, res) => {
 
   if (method === "OPTIONS") {
     res.writeHead(204, {
-      "Access-Control-Allow-Origin": ALLOWED_ORIGIN,
+      "Access-Control-Allow-Origin": getAllowedOrigin(req),
       "Access-Control-Allow-Methods": "POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type",
     });
@@ -40,7 +178,7 @@ const server = http.createServer(async (req, res) => {
 
   if (url === GB_MESSAGE_PATH) {
     if (method !== "POST") {
-      sendJson(res, 405, { error: "Method not allowed" });
+      sendJson(res, 405, { error: "Method not allowed" }, req);
       return;
     }
 
@@ -48,7 +186,7 @@ const server = http.createServer(async (req, res) => {
     try {
       rawBody = await readBody(req);
     } catch {
-      sendJson(res, 400, { error: "Invalid request body" });
+      sendJson(res, 400, { error: "Invalid request body" }, req);
       return;
     }
 
@@ -56,23 +194,67 @@ const server = http.createServer(async (req, res) => {
     try {
       body = JSON.parse(rawBody);
     } catch {
-      sendJson(res, 400, { error: "Invalid JSON" });
+      sendJson(res, 400, { error: "Invalid JSON" }, req);
       return;
     }
 
     console.log("[GB bridge server] received:", body);
 
-    const reply = "OK!";
-    console.log("[GB bridge server] replying:", JSON.stringify(reply));
+    const message = String(body.message || "").trim();
+    const command = String(body.prompt || body.message || "").trim();
+
+    const isGetReply =
+      message === "ASK:GET_REPLY" ||
+      command === "GET_REPLY" ||
+      message.includes("GET_REPLY") ||
+      command.includes("GET_REPLY");
+
+    if (isGetReply) {
+      console.log(
+        "[GB bridge server] GET_REPLY requested. latestAiReady=" +
+          latestAiReady +
+          " latestAiReply=" +
+          JSON.stringify(latestAiReply)
+      );
+
+      let reply;
+      if (!latestAiReady) {
+        if (aiJobRunning) {
+          reply = "WAIT";
+        } else if (!latestAiReply) {
+          startAiJob("HI");
+          reply = "WAIT";
+        } else {
+          reply = "WAIT";
+        }
+      } else {
+        reply = latestAiReply;
+      }
+
+      console.log("[GB bridge server] replying to ROM:", reply);
+
+      sendJson(res, 200, {
+        reply,
+        aiReply: latestAiReply || "",
+        receivedPrompt: command,
+      }, req);
+      return;
+    }
+
+    startAiJob(command);
+
+    const reply = "WAIT";
+    console.log("[GB bridge server] replying to ROM:", JSON.stringify(reply));
 
     sendJson(res, 200, {
       reply,
-      receivedPrompt: body.prompt ?? "",
-    });
+      aiReply: "",
+      receivedPrompt: command,
+    }, req);
     return;
   }
 
-  sendJson(res, 404, { error: "Not found" });
+  sendJson(res, 404, { error: "Not found" }, req);
 });
 
 server.listen(PORT, HOST, () => {

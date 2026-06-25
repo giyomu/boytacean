@@ -75,6 +75,13 @@ impl Serial {
         serial_queue_debug_callback("push", byte, self.incoming.len());
     }
 
+    pub fn clear_incoming_queue(&mut self) {
+        let previous_len = self.incoming.len();
+        self.incoming.clear();
+        #[cfg(feature = "wasm")]
+        serial_queue_debug_callback("clear", 0, previous_len);
+    }
+
     pub fn reset(&mut self) {
         self.data = 0x0;
         self.control = 0x0;

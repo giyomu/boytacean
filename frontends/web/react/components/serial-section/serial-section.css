@@ -1,3 +1,7 @@
+.serial-section .logger > .logger-data {
+    white-space: pre-wrap;
+}
+
 .serial-section .printer > .printer-lines {
     font-size: 0px;
 }
@@ -8,4 +12,10 @@
 
 .serial-section .printer > .printer-lines > .placeholder {
     font-size: initial;
+}
+
+.serial-section .serial-section-poll-ai-reply {
+    cursor: pointer;
+    font: inherit;
+    padding: 4px 10px;
 }

@@ -777,14 +777,16 @@ export class GameboyEmulator extends EmulatorLogic implements Emulator {
 
     async buildRomData(file: File): Promise<Uint8Array> {
         const arrayBuffer = await file.arrayBuffer();
-        let romData = new Uint8Array(arrayBuffer);
-
+        let romData: Uint8Array<ArrayBufferLike> = new Uint8Array(arrayBuffer);
+      
         if (file.name.endsWith(".zip")) {
-            const zip = await loadAsync(romData);
-            const firstFile = Object.values(zip.files)[0];
-            romData = await firstFile.async("uint8array");
+          const zip = await loadAsync(romData);
+          const firstFile = Object.values(zip.files)[0];
+      
+          const newRomData = await firstFile.async("uint8array");
+          romData = new Uint8Array(newRomData);
         }
-
+      
         return romData;
     }
 
@@ -949,6 +951,99 @@ export class GameboyEmulator extends EmulatorLogic implements Emulator {
         this.gameBoy?.queue_serial_byte_wa(byte & 0xff);
     }
 
+    clearSerialQueue() {
+        this.gameBoy?.clear_serial_queue_wa();
+    }
+
+    debugReadCString(
+        address = 0xc600,
+        maxLen = 64,
+        label?: string
+    ): string {
+        const addrLabel = address.toString(16).toUpperCase().padStart(4, "0");
+        const labelPart = label ? ` ${label}` : "";
+        const rawBytes: number[] = [];
+        let text = "";
+
+        if (this.gameBoy) {
+            for (let index = 0; index < 16; index++) {
+                rawBytes.push(this.gameBoy.read_memory_wa(address + index));
+            }
+
+            for (let index = 0; index < maxLen; index++) {
+                const byte = this.gameBoy.read_memory_wa(address + index);
+                if (byte === 0x00) {
+                    break;
+                }
+                if (byte >= 0x20 && byte <= 0x7e) {
+                    text += String.fromCharCode(byte);
+                }
+            }
+        }
+
+        const bytesMessage = `[Boytacean RAM debug] ${addrLabel}${labelPart} bytes: [${rawBytes
+            .map(
+                (byte) =>
+                    `0x${byte.toString(16).padStart(2, "0").toUpperCase()}`
+            )
+            .join(", ")}]`;
+        const stringMessage = `[Boytacean RAM debug] ${addrLabel}${labelPart} string: "${text}"`;
+
+        console.log(bytesMessage);
+        console.log(stringMessage);
+        this.trigger("ram-debug", { message: bytesMessage });
+        this.trigger("ram-debug", { message: stringMessage });
+        return text;
+    }
+
+    pushCStringToReplyVars(sourceAddress = 0xc640, maxChars = 12): string {
+        const replyVarBase = 0xc33f;
+        const chars: number[] = [];
+        let text = "";
+
+        if (this.gameBoy) {
+            for (let index = 0; index < maxChars; index++) {
+                const byte = this.gameBoy.read_memory_wa(sourceAddress + index);
+                if (byte === 0x00) {
+                    break;
+                }
+                chars.push(byte);
+                if (byte >= 0x20 && byte <= 0x7e) {
+                    text += String.fromCharCode(byte);
+                }
+            }
+
+            for (let index = 0; index < maxChars; index++) {
+                const lowAddress = replyVarBase + index * 2;
+                const highAddress = replyVarBase + index * 2 + 1;
+                const charByte = index < chars.length ? chars[index] : 0x00;
+                this.gameBoy.write_memory_wa(lowAddress, charByte);
+                this.gameBoy.write_memory_wa(highAddress, 0x00);
+            }
+        }
+
+        const message = `[Boytacean RAM debug] pushed C640 to Reply vars: "${text}"`;
+        console.log(message);
+        this.trigger("ram-debug", { message });
+        return text;
+    }
+
+    clearC640SentenceBuffer(
+        startAddress = 0xc640,
+        endAddress = 0xc6bf
+    ): void {
+        if (this.gameBoy) {
+            for (let address = startAddress; address <= endAddress; address++) {
+                this.gameBoy.write_memory_wa(address, 0x00);
+            }
+        }
+
+        const message =
+            "[Boytacean RAM debug] cleared C640 sentence buffer";
+        console.log(message);
+        this.trigger("ram-debug", { message });
+    }
+
     /**
      * Tries for save/flush the current machine RAM into the
      * `localStorage`, so that it can be latter restored.
@@ -1079,6 +1174,13 @@ window.loggerCallback = (data: Uint8Array) => {
 };
 
 window.serialQueueDebugCallback = (stage, byte, queueLen) => {
+    if (stage === "clear") {
+        console.log("[Boytacean serial queue debug]", {
+            stage: "clear",
+            previousQueueLen: queueLen,
+        });
+        return;
+    }
     console.log("[Boytacean serial queue debug]", {
         stage,
         byte,
