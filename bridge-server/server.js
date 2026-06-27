@@ -241,6 +241,29 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    const HINT_MAP = {
+      "HINT:GO": "GO EAST FIRST",
+      "HINT:DOOR": "FIND THE KEY",
+      "HINT:SWITCH": "CHECK BEHIND WALL",
+      "HINT:NEXT": "SEARCH NEAR STATUE",
+    };
+
+    const hintReply = HINT_MAP[command];
+    if (hintReply) {
+      console.log("[GB bridge server] hardcoded hint for:", command, "->", hintReply);
+      sendJson(
+        res,
+        200,
+        {
+          reply: hintReply,
+          aiReply: hintReply,
+          receivedPrompt: command,
+        },
+        req
+      );
+      return;
+    }
+
     startAiJob(command);
 
     const reply = "WAIT";
