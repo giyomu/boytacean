@@ -60,6 +60,204 @@ function cleanAiReply(text) {
   return cleaned.slice(0, 48);
 }
 
+function cleanGameBoyReply(text, maxLength = 28) {
+  let cleaned = String(text || "")
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[^A-Za-z0-9 .,!?'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  if (!cleaned || cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  const truncated = cleaned.slice(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(" ");
+
+  if (lastSpace === -1) {
+    return truncated;
+  }
+
+  return truncated.slice(0, lastSpace).trim();
+}
+
+function cleanHintReply(text) {
+  const fallback = "SEARCH THE EAST ROOM";
+
+  let cleaned = String(text || "")
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[0-9]/g, "")
+    .replace(/[^A-Za-z ]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  const greetingPrefixes = [
+    "HELLO ",
+    "HI ",
+    "HEY ",
+    "GREETINGS ",
+    "WELCOME ",
+  ];
+  for (const prefix of greetingPrefixes) {
+    if (cleaned.startsWith(prefix)) {
+      cleaned = cleaned.slice(prefix.length).trim();
+    }
+  }
+
+  const bannedWords = [
+    "AI",
+    "TERMINAL",
+    "USER",
+    "PLAYER",
+    "PROMPT",
+    "QUESTION",
+  ];
+
+  let words = cleaned.split(" ").filter(Boolean);
+
+  if (
+    words.length < 2 ||
+    words.length > 6 ||
+    words.some((word) => bannedWords.includes(word))
+  ) {
+    return fallback;
+  }
+
+  cleaned = words.join(" ");
+  cleaned = cleanGameBoyReply(cleaned, 28);
+
+  words = cleaned.split(" ").filter(Boolean);
+  if (words.length < 2) {
+    return fallback;
+  }
+
+  if (!cleaned) {
+    return fallback;
+  }
+
+  return cleaned;
+}
+
+const HINT_COMMANDS = new Set([
+  "HINT:GO",
+  "HINT:DOOR",
+  "HINT:SWITCH",
+  "HINT:NEXT",
+]);
+
+const DUNGEON_CONTEXT = `Dungeon facts:
+- The first useful route is east.
+- A locked door requires a key.
+- The key is found in another room.
+- One hidden stair appears after activating a switch.
+- The switch is near or behind a statue.
+- Secret paths may be behind walls.
+- The player should explore connected rooms before returning to a locked door.`;
+
+const HINT_PROMPTS = {
+  "HINT:GO":
+    "Using only the dungeon facts above, give one short direction or exploration hint as a natural phrase of 2 to 6 words with spaces between every word. Examples: GO EAST FIRST / EXPLORE CONNECTED ROOMS / CHECK BEHIND THE WALL",
+  "HINT:DOOR":
+    "Using only the dungeon facts above, give one short hint about the key, the locked door, or returning later as a natural phrase of 2 to 6 words with spaces between every word. Examples: FIND THE KEY FIRST / RETURN AFTER EXPLORING / THE DOOR NEEDS A KEY",
+  "HINT:SWITCH":
+    "Using only the dungeon facts above, give one short hint about the switch, statue, wall, or hidden stair as a natural phrase of 2 to 6 words with spaces between every word. Examples: SEARCH BEHIND THE STATUE / CHECK THE WALL BEHIND / ACTIVATE THE SWITCH FIRST",
+  "HINT:NEXT":
+    "Using only the dungeon facts above, give one short next progression step hint as a natural phrase of 2 to 6 words with spaces between every word. Examples: GO EAST AND EXPLORE / FIND THE KEY NEXT / RETURN TO THE LOCKED DOOR",
+};
+
+const hintJobs = {};
+
+function getHintJobState(command) {
+  if (!hintJobs[command]) {
+    hintJobs[command] = { running: false, ready: false, reply: "" };
+  }
+  return hintJobs[command];
+}
+
+function startHintJob(command) {
+  const state = getHintJobState(command);
+  if (state.running) {
+    console.log("[GB bridge server] hint job already running for:", command);
+    return;
+  }
+
+  console.log("[GB bridge server] starting hint job for:", command);
+
+  state.running = true;
+  state.ready = false;
+  state.reply = "";
+
+  askOllamaHint(command)
+    .then((hintReply) => {
+      state.reply = hintReply;
+      state.ready = true;
+      console.log("[Ollama hint ready]", command, state.reply);
+    })
+    .catch((err) => {
+      state.reply = "NO HINT AVAILABLE";
+      state.ready = true;
+      console.error("[Ollama hint error]", command, err);
+    })
+    .finally(() => {
+      state.running = false;
+    });
+}
+
+function handleHintRequest(command) {
+  const state = getHintJobState(command);
+
+  if (state.ready && state.reply) {
+    const reply = state.reply;
+    state.ready = false;
+    state.reply = "";
+    return reply;
+  }
+
+  if (state.running) {
+    return "WAIT";
+  }
+
+  startHintJob(command);
+  return "WAIT";
+}
+
+async function askOllamaHint(command) {
+  const contextPrompt = HINT_PROMPTS[command];
+  const prompt = `${DUNGEON_CONTEXT}
+
+${contextPrompt}
+
+Output rules:
+- Uppercase only
+- Exactly 2 to 6 words
+- Spaces between all words
+- No numbers
+- No punctuation
+- Do not mention AI, terminal, user, player, prompt, or question
+- Do not invent facts beyond the dungeon facts above
+- Output only the hint phrase
+- Maximum 28 characters`;
+
+  const r = await fetch("http://localhost:11434/api/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "qwen2.5:3b",
+      prompt,
+      stream: false,
+    }),
+  });
+
+  if (!r.ok) {
+    throw new Error(`Ollama HTTP ${r.status}`);
+  }
+
+  const data = await r.json();
+  return cleanHintReply(data.response || "");
+}
+
 let aiJobRunning = false;
 let latestAiReply = "";
 let latestAiReady = false;
@@ -241,22 +439,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    const HINT_MAP = {
-      "HINT:GO": "GO EAST FIRST",
-      "HINT:DOOR": "FIND THE KEY",
-      "HINT:SWITCH": "CHECK BEHIND WALL",
-      "HINT:NEXT": "SEARCH NEAR STATUE",
-    };
+    if (HINT_COMMANDS.has(command)) {
+      const reply = handleHintRequest(command);
+      const state = getHintJobState(command);
 
-    const hintReply = HINT_MAP[command];
-    if (hintReply) {
-      console.log("[GB bridge server] hardcoded hint for:", command, "->", hintReply);
+      console.log(
+        "[GB bridge server] hint request:",
+        command,
+        "->",
+        reply,
+        "running=" + state.running,
+        "ready=" + state.ready
+      );
+
       sendJson(
         res,
         200,
         {
-          reply: hintReply,
-          aiReply: hintReply,
+          reply,
+          aiReply: reply === "WAIT" ? "" : reply,
           receivedPrompt: command,
         },
         req
