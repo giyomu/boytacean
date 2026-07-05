@@ -1,7 +1,7 @@
 const http = require("http");
 
 const PORT = 3000;
-const HOST = "localhost";
+const HOST = "0.0.0.0";
 const GB_MESSAGE_PATH = "/api/gb-message";
 
 function getAllowedOrigin(req) {
