@@ -463,8 +463,13 @@ impl Emulator {
         let Some(queue) = &self.serial_reply_queue else {
             return;
         };
-        let mut bytes = queue.lock().unwrap();
-        while let Some(byte) = bytes.pop_front() {
+
+        let bytes: Vec<u8> = {
+            let mut queue = queue.lock().unwrap();
+            queue.drain(..).collect()
+        };
+
+        for byte in bytes {
             self.system.queue_serial_byte(byte);
         }
     }
@@ -1027,6 +1032,13 @@ struct Args {
 
     #[arg(
         long,
+        default_value_t = String::from("http://127.0.0.1:3000/api/gb-message"),
+        help = "Node bridge URL for serial device 'node'"
+    )]
+    node_url: String,
+
+    #[arg(
+        long,
         default_value_t = false,
         help = "If set no boot ROM will be loaded"
     )]
@@ -1153,7 +1165,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
         let mode = Cartridge::from_file(&args.rom_path)?.gb_mode();
         game_boy.set_mode(mode);
     }
-    let (device, serial_reply_queue) = build_device(&args.device)?;
+    let (device, serial_reply_queue) = build_device(&args.device, &args.node_url)?;
     game_boy.set_ppu_enabled(!args.no_ppu);
     game_boy.set_apu_enabled(!args.no_apu);
     game_boy.set_dma_enabled(!args.no_dma);
@@ -1204,6 +1216,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
 
 fn build_device(
     device: &str,
+    node_url: &str,
 ) -> Result<(Box<dyn SerialDevice>, Option<SerialReplyQueue>), Error> {
     match device {
         "null" => Ok((Box::<NullDevice>::default(), None)),
@@ -1211,7 +1224,10 @@ fn build_device(
         "node" => {
             let reply_queue = new_reply_queue();
             Ok((
-                Box::new(NodeBridgeDevice::new(reply_queue.clone())),
+                Box::new(NodeBridgeDevice::new(
+                    reply_queue.clone(),
+                    node_url.to_string(),
+                )),
                 Some(reply_queue),
             ))
         }
