@@ -1524,6 +1524,10 @@ impl GameBoy {
         self.serial().set_device(device);
     }
 
+    pub fn queue_serial_byte(&mut self, byte: u8) {
+        self.serial().queue_byte(byte);
+    }
+
     pub fn read_memory(&mut self, addr: u16) -> u8 {
         self.mmu().read(addr)
     }
@@ -1648,7 +1652,7 @@ impl GameBoy {
     }
 
     pub fn queue_serial_byte_wa(&mut self, byte: u8) {
-        self.serial().queue_byte(byte);
+        self.queue_serial_byte(byte);
     }
 
     pub fn clear_serial_queue_wa(&mut self) {

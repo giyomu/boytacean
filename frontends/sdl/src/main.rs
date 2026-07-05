@@ -1,5 +1,6 @@
 pub mod audio;
 pub mod data;
+pub mod devices;
 pub mod sdl;
 pub mod shader;
 pub mod test;
@@ -13,6 +14,7 @@ use std::{
 };
 
 use audio::Audio;
+use devices::node_bridge::{new_reply_queue, NodeBridgeDevice, SerialReplyQueue};
 use boytacean::{
     devices::{printer::PrinterDevice, stdout::StdoutDevice},
     gb::{AudioProvider, GameBoy, GameBoyMode},
@@ -161,6 +163,9 @@ pub struct Emulator {
 
     /// Index of the current palette controlling the palette being used.
     palette_index: usize,
+
+    /// Optional queue of serial reply bytes to inject into the Game Boy.
+    serial_reply_queue: Option<SerialReplyQueue>,
 }
 
 impl Emulator {
@@ -184,6 +189,7 @@ impl Emulator {
             features: options
                 .features
                 .unwrap_or_else(|| vec!["video", "audio", "no-vsync"]),
+            serial_reply_queue: None,
             palettes: [
                 PaletteInfo::new(
                     "basic",
@@ -449,6 +455,20 @@ impl Emulator {
         !self.unlimited
     }
 
+    pub fn set_serial_reply_queue(&mut self, queue: SerialReplyQueue) {
+        self.serial_reply_queue = Some(queue);
+    }
+
+    fn drain_serial_replies(&mut self) {
+        let Some(queue) = &self.serial_reply_queue else {
+            return;
+        };
+        let mut bytes = queue.lock().unwrap();
+        while let Some(byte) = bytes.pop_front() {
+            self.system.queue_serial_byte(byte);
+        }
+    }
+
     pub fn run(&mut self) {
         // obtains the dimensions of the display that are going
         // to be used for the graphics rendering
@@ -686,6 +706,8 @@ Drag & drop ROM file: Load new ROM and reset system\n===========================
             let current_time = self.sdl.as_mut().unwrap().timer_subsystem.ticks();
 
             if current_time >= self.next_tick_time_i {
+                self.drain_serial_replies();
+
                 // re-starts the counter cycles with the number of pending cycles
                 // from the previous tick and the last frame with the system PPU
                 // frame index to be overridden in case there's at least one new frame
@@ -872,6 +894,8 @@ Drag & drop ROM file: Load new ROM and reset system\n===========================
             let current_time = reference.elapsed().as_millis() as u32;
 
             if current_time >= self.next_tick_time_i {
+                self.drain_serial_replies();
+
                 // re-starts the counter cycles with the number of pending cycles
                 // from the previous tick
                 let mut counter_cycles = pending_cycles;
@@ -1129,7 +1153,7 @@ fn main() -> Result<(), Box<dyn StdError>> {
         let mode = Cartridge::from_file(&args.rom_path)?.gb_mode();
         game_boy.set_mode(mode);
     }
-    let device: Box<dyn SerialDevice> = build_device(&args.device)?;
+    let (device, serial_reply_queue) = build_device(&args.device)?;
     game_boy.set_ppu_enabled(!args.no_ppu);
     game_boy.set_apu_enabled(!args.no_apu);
     game_boy.set_dma_enabled(!args.no_dma);
@@ -1160,6 +1184,9 @@ fn main() -> Result<(), Box<dyn StdError>> {
         },
     };
     let mut emulator = Emulator::new(game_boy, options);
+    if let Some(queue) = serial_reply_queue {
+        emulator.set_serial_reply_queue(queue);
+    }
     emulator.start(SCREEN_SCALE);
     emulator.load_rom(Some(&args.rom_path))?;
     emulator.apply_cheats(&args.cheats);
@@ -1175,10 +1202,19 @@ fn main() -> Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
-fn build_device(device: &str) -> Result<Box<dyn SerialDevice>, Error> {
+fn build_device(
+    device: &str,
+) -> Result<(Box<dyn SerialDevice>, Option<SerialReplyQueue>), Error> {
     match device {
-        "null" => Ok(Box::<NullDevice>::default()),
-        "stdout" => Ok(Box::<StdoutDevice>::default()),
+        "null" => Ok((Box::<NullDevice>::default(), None)),
+        "stdout" => Ok((Box::<StdoutDevice>::default(), None)),
+        "node" => {
+            let reply_queue = new_reply_queue();
+            Ok((
+                Box::new(NodeBridgeDevice::new(reply_queue.clone())),
+                Some(reply_queue),
+            ))
+        }
         "printer" => {
             let mut printer = Box::<PrinterDevice>::default();
             printer.set_callback(|image_buffer| {
@@ -1192,7 +1228,7 @@ fn build_device(device: &str) -> Result<Box<dyn SerialDevice>, Error> {
                 )
                 .unwrap();
             });
-            Ok(printer)
+            Ok((printer, None))
         }
         _ => Err(Error::InvalidParameter(format!(
             "Unsupported device: {device}"
