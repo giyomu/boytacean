@@ -34,6 +34,7 @@ use clap::Parser;
 use image::{ColorType, ImageBuffer, Rgb};
 use sdl::{surface_from_bytes, SdlSystem};
 use sdl2::{
+    controller::{Button, GameController},
     event::Event,
     keyboard::{Keycode, Mod},
     pixels::PixelFormatEnum,
@@ -166,6 +167,15 @@ pub struct Emulator {
 
     /// Optional queue of serial reply bytes to inject into the Game Boy.
     serial_reply_queue: Option<SerialReplyQueue>,
+
+    /// Opened SDL game controller handles kept alive for input.
+    game_controllers: Vec<GameController>,
+
+    /// Tracks if the controller Back button is currently held.
+    controller_back_down: bool,
+
+    /// Tracks if the controller Start button is currently held.
+    controller_start_down: bool,
 }
 
 impl Emulator {
@@ -190,6 +200,9 @@ impl Emulator {
                 .features
                 .unwrap_or_else(|| vec!["video", "audio", "no-vsync"]),
             serial_reply_queue: None,
+            game_controllers: Vec::new(),
+            controller_back_down: false,
+            controller_start_down: false,
             palettes: [
                 PaletteInfo::new(
                     "basic",
@@ -264,6 +277,8 @@ impl Emulator {
 
         let sdl = sdl2::init().unwrap();
 
+        self.start_controllers(&sdl);
+
         if self.features.contains(&"video") {
             self.start_graphics(&sdl, screen_scale, self.opengl);
         }
@@ -300,6 +315,30 @@ impl Emulator {
             self.system.audio_channels(),
             None,
         ));
+    }
+
+    fn start_controllers(&mut self, sdl: &Sdl) {
+        let game_controller = sdl.game_controller().unwrap();
+        let joystick = sdl.joystick().unwrap();
+        let num = joystick.num_joysticks().unwrap();
+
+        for i in 0..num {
+            if game_controller.is_game_controller(i) {
+                match game_controller.open(i) {
+                    Ok(controller) => {
+                        println!(
+                            "Opened game controller {}: {}",
+                            i,
+                            controller.name()
+                        );
+                        self.game_controllers.push(controller);
+                    }
+                    Err(error) => {
+                        eprintln!("Failed to open game controller {i}: {error}");
+                    }
+                }
+            }
+        }
     }
 
     pub fn stop(&mut self) {
@@ -559,6 +598,37 @@ impl Emulator {
             while let Some(event) = self.sdl.as_mut().unwrap().event_pump.poll_event() {
                 match event {
                     Event::Quit { .. } => break 'main,
+                    Event::ControllerButtonDown { button, .. } => {
+                        match button {
+                            Button::Guide => break 'main,
+                            Button::Back => {
+                                self.controller_back_down = true;
+                                if self.controller_start_down {
+                                    break 'main;
+                                }
+                            }
+                            Button::Start => {
+                                self.controller_start_down = true;
+                                if self.controller_back_down {
+                                    break 'main;
+                                }
+                            }
+                            _ => {}
+                        }
+                        if let Some(key) = controller_button_to_pad(button) {
+                            self.system.key_press(key);
+                        }
+                    }
+                    Event::ControllerButtonUp { button, .. } => {
+                        match button {
+                            Button::Back => self.controller_back_down = false,
+                            Button::Start => self.controller_start_down = false,
+                            _ => {}
+                        }
+                        if let Some(key) = controller_button_to_pad(button) {
+                            self.system.key_lift(key);
+                        }
+                    }
                     Event::KeyDown {
                         keycode: Some(Keycode::Escape),
                         ..
@@ -1263,6 +1333,20 @@ fn key_to_pad(keycode: Keycode) -> Option<PadKey> {
         Keycode::Space => Some(PadKey::Select),
         Keycode::A => Some(PadKey::A),
         Keycode::S => Some(PadKey::B),
+        _ => None,
+    }
+}
+
+fn controller_button_to_pad(button: Button) -> Option<PadKey> {
+    match button {
+        Button::DPadUp => Some(PadKey::Up),
+        Button::DPadDown => Some(PadKey::Down),
+        Button::DPadLeft => Some(PadKey::Left),
+        Button::DPadRight => Some(PadKey::Right),
+        Button::A => Some(PadKey::A),
+        Button::B => Some(PadKey::B),
+        Button::Start => Some(PadKey::Start),
+        Button::Back => Some(PadKey::Select),
         _ => None,
     }
 }
