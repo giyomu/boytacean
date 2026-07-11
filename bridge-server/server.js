@@ -4,6 +4,37 @@ const PORT = 3000;
 const HOST = "0.0.0.0";
 const GB_MESSAGE_PATH = "/api/gb-message";
 
+// DEV_ONLY: set DEV_HINT_LAYOUT_TEST=1 to bypass Ollama and return fixed
+// layout-test replies mapped by hint command (remove before release).
+const DEV_HINT_LAYOUT_TEST = process.env.DEV_HINT_LAYOUT_TEST === "1";
+const DEV_HINT_TEST_REPLIES = {
+  "HINT:GO": "GO EAST FIRST",
+  "HINT:DOOR": "CHECK BEHIND THE STATUE",
+  "HINT:SWITCH": "RETURN TO THE LOCKED DOOR AFTER SEARCHING EAST",
+  "HINT:NEXT": "RETURN TO THE LOCKED DOOR AFTER SEARCHING EAST",
+};
+
+const HINT_WRAP_WIDTH = 17;
+const HINT_MAX_LINES = 3;
+// preliminary raw cap before wrap enforcement; final fit is decided by line count
+const HINT_RAW_CHAR_LIMIT = 48;
+const HINT_FALLBACK = "SEARCH THE EAST ROOM";
+const HINT_CONNECTOR_WORDS = new Set([
+  "AND",
+  "OR",
+  "BUT",
+  "TO",
+  "THE",
+  "A",
+  "AN",
+  "OF",
+  "IN",
+  "ON",
+  "WITH",
+  "AFTER",
+  "BEFORE",
+]);
+
 function getAllowedOrigin(req) {
   const origin = req.headers.origin;
   if (!origin) {
@@ -22,7 +53,8 @@ function getAllowedOrigin(req) {
 function cleanAiReply(text) {
   let cleaned = String(text || "")
     .replace(/[._]+/g, " ")
-    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[^\x20-\x7E]/g, " ")
     .replace(/\s+/g, " ")
     .trim()
     .toUpperCase();
@@ -60,33 +92,75 @@ function cleanAiReply(text) {
   return cleaned.slice(0, 48);
 }
 
-function cleanGameBoyReply(text, maxLength = 28) {
-  let cleaned = String(text || "")
-    .replace(/[^\x20-\x7E]/g, "")
-    .replace(/[^A-Za-z0-9 .,!?'-]/g, " ")
-    .replace(/\s+/g, " ")
+// matches ui_load_serial_text() / count_serial_hint_lines() in vm_ui.c
+function wrapHintLines(text) {
+  const words = String(text || "")
     .trim()
-    .toUpperCase();
+    .split(/\s+/)
+    .filter(Boolean);
+  const lines = [];
+  let current = "";
 
-  if (!cleaned || cleaned.length <= maxLength) {
-    return cleaned;
+  for (const word of words) {
+    if (current.length > 0) {
+      if (current.length + 1 + word.length > HINT_WRAP_WIDTH) {
+        lines.push(current);
+        current = word;
+      } else {
+        current += " " + word;
+      }
+    } else {
+      current = word;
+    }
   }
 
-  const truncated = cleaned.slice(0, maxLength);
-  const lastSpace = truncated.lastIndexOf(" ");
-
-  if (lastSpace === -1) {
-    return truncated;
+  if (current) {
+    lines.push(current);
   }
 
-  return truncated.slice(0, lastSpace).trim();
+  return lines;
+}
+
+function countHintWrapLines(text) {
+  return wrapHintLines(text).length;
+}
+
+function endsWithConnectorWord(text) {
+  const words = String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (!words.length) {
+    return false;
+  }
+  return HINT_CONNECTOR_WORDS.has(words[words.length - 1]);
+}
+
+function trimHintWords(words) {
+  let trimmed = words.slice();
+
+  while (trimmed.length > 0) {
+    const phrase = trimmed.join(" ");
+    const lineCount = countHintWrapLines(phrase);
+
+    if (
+      lineCount <= HINT_MAX_LINES &&
+      phrase.length <= HINT_RAW_CHAR_LIMIT &&
+      !endsWithConnectorWord(phrase)
+    ) {
+      return phrase;
+    }
+
+    trimmed.pop();
+  }
+
+  return "";
 }
 
 function cleanHintReply(text) {
-  const fallback = "SEARCH THE EAST ROOM";
-
   let cleaned = String(text || "")
-    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[^\x20-\x7E]/g, " ")
     .replace(/[0-9]/g, "")
     .replace(/[^A-Za-z ]/g, " ")
     .replace(/\s+/g, " ")
@@ -116,28 +190,41 @@ function cleanHintReply(text) {
   ];
 
   let words = cleaned.split(" ").filter(Boolean);
+  words = words.filter((word) => !bannedWords.includes(word));
 
-  if (
-    words.length < 2 ||
-    words.length > 6 ||
-    words.some((word) => bannedWords.includes(word))
-  ) {
-    return fallback;
-  }
-
-  cleaned = words.join(" ");
-  cleaned = cleanGameBoyReply(cleaned, 28);
-
-  words = cleaned.split(" ").filter(Boolean);
   if (words.length < 2) {
-    return fallback;
+    return HINT_FALLBACK;
   }
 
-  if (!cleaned) {
-    return fallback;
+  cleaned = trimHintWords(words);
+
+  if (!cleaned || countHintWrapLines(cleaned) < 1) {
+    return HINT_FALLBACK;
   }
 
   return cleaned;
+}
+
+function cleanGameBoyReply(text, maxLength = 28) {
+  let cleaned = String(text || "")
+    .replace(/[^\x20-\x7E]/g, "")
+    .replace(/[^A-Za-z0-9 .,!?'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toUpperCase();
+
+  if (!cleaned || cleaned.length <= maxLength) {
+    return cleaned;
+  }
+
+  const truncated = cleaned.slice(0, maxLength);
+  const lastSpace = truncated.lastIndexOf(" ");
+
+  if (lastSpace === -1) {
+    return truncated;
+  }
+
+  return truncated.slice(0, lastSpace).trim();
 }
 
 const HINT_COMMANDS = new Set([
@@ -224,6 +311,10 @@ function handleHintRequest(command) {
 }
 
 async function askOllamaHint(command) {
+  if (DEV_HINT_LAYOUT_TEST && DEV_HINT_TEST_REPLIES[command]) {
+    return cleanHintReply(DEV_HINT_TEST_REPLIES[command]);
+  }
+
   const contextPrompt = HINT_PROMPTS[command];
   const prompt = `${DUNGEON_CONTEXT}
 
@@ -231,14 +322,14 @@ ${contextPrompt}
 
 Output rules:
 - Uppercase only
-- Exactly 2 to 6 words
-- Spaces between all words
+- Natural phrase with spaces between all words
 - No numbers
 - No punctuation
 - Do not mention AI, terminal, user, player, prompt, or question
 - Do not invent facts beyond the dungeon facts above
 - Output only the hint phrase
-- Maximum 28 characters`;
+- Keep the phrase short enough to wrap to at most 3 lines at 17 characters per line
+- Prefer roughly 2 to 10 words`;
 
   const r = await fetch("http://localhost:11434/api/generate", {
     method: "POST",
@@ -481,6 +572,45 @@ const server = http.createServer(async (req, res) => {
   sendJson(res, 404, { error: "Not found" }, req);
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`[GB bridge server] listening on http://${HOST}:${PORT}`);
-});
+function runHintCleanupSelfTest() {
+  const samples = [
+    "GO EAST FIRST",
+    "CHECK BEHIND THE STATUE",
+    "GO EAST FIRST\nEXPLORE CONNECTED",
+    "CHECK THE WALL\r\nBEHIND",
+    "RETURN TO\tTHE LOCKED DOOR",
+    "RETURN TO LOCKED DOOR AND",
+    "RETURN TO THE LOCKED DOOR AFTER SEARCHING THE EASTERN ROOM",
+    "SEARCH BEHIND THE STATUE THEN RETURN TO THE LOCKED DOOR",
+    "THIS IS A DELIBERATELY OVERLONG HINT THAT SHOULD BE TRIMMED DOWN TO THREE LINES AT MOST WHEN WRAPPED",
+    "...!!!",
+    "",
+  ];
+
+  for (const sample of samples) {
+    const cleaned = cleanHintReply(sample);
+    const wrapped = wrapHintLines(cleaned);
+    console.log(
+      JSON.stringify({
+        input: sample,
+        cleaned,
+        chars: cleaned.length,
+        lines: wrapped.length,
+        wrapped,
+      })
+    );
+  }
+}
+
+if (process.argv.includes("--test-hint-cleanup")) {
+  runHintCleanupSelfTest();
+} else {
+  server.listen(PORT, HOST, () => {
+    console.log(`[GB bridge server] listening on http://${HOST}:${PORT}`);
+    if (DEV_HINT_LAYOUT_TEST) {
+      console.log(
+        "[GB bridge server] DEV_HINT_LAYOUT_TEST=1 — fixed layout replies enabled"
+      );
+    }
+  });
+}
