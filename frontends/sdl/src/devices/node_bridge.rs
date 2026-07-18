@@ -122,7 +122,17 @@ impl NodeBridgeDevice {
     }
 
     fn flush_line(&mut self) {
-        // println!("[NODE BRIDGE RAW] {:02X?}", self.buffer);
+        let visible_bytes: Vec<u8> = self
+            .buffer
+            .iter()
+            .copied()
+            .filter(|&byte| byte != 0)
+            .collect();
+
+        if !visible_bytes.is_empty() {
+            println!("[NODE BRIDGE RAW] {:02X?}", visible_bytes);
+        }
+
         let message = String::from_utf8_lossy(&self.buffer)
             .trim_start_matches(|c: char| c == '\0' || c.is_ascii_control())
             .trim()
