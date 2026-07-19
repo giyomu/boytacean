@@ -7,6 +7,8 @@ Cargo.lock
 
 run_bridge_*.ps1
 run_boytacean_rom_*.ps1
+/build-local-sdl.ps1
+/build-and-run-local.ps1
 
 /.vscode/settings.json
 
